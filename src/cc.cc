@@ -57,6 +57,19 @@ pvector<NodeID> ShiloachVishkin(const Graph &g) {
           comp[comp_v] = comp_u;
         }
       }
+      // The GAP specification requires weakly connected components for a
+      // directed input graph.  The v1.0 reference code only followed outgoing
+      // edges, so an edge such as 1 -> 0 could leave its endpoints in separate
+      // components.  Treat incoming edges as undirected connections too.
+      if (g.directed()) {
+        for (NodeID v : g.in_neigh(u)) {
+          NodeID comp_v = comp[v];
+          if ((comp_u < comp_v) && (comp_v == comp[comp_v])) {
+            change = true;
+            comp[comp_v] = comp_u;
+          }
+        }
+      }
     }
     #pragma omp parallel for
     for (NodeID n=0; n < g.num_nodes(); n++) {

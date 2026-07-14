@@ -83,4 +83,15 @@ test-verify-%-$(TEST_GRAPH): test/out/verify-%-$(TEST_GRAPH).out
 		else echo " $(FAIL) Verify $*"; \
 	fi
 
-test-verify: $(addsuffix -$(TEST_GRAPH), $(addprefix test-verify-, $(KERNELS)))
+test/out/verify-cc-weak-directed.out: test/out cc test/graphs/weak-directed.el
+	./cc -f test/graphs/weak-directed.el -vn1 > $@
+
+.PHONY: test-verify-cc-weak-directed
+test-verify-cc-weak-directed: test/out/verify-cc-weak-directed.out
+	@if grep -q "Verification: *PASS" $<; \
+		then echo " $(PASS) Verify cc weak directed"; \
+		else echo " $(FAIL) Verify cc weak directed"; \
+	fi
+
+test-verify: $(addsuffix -$(TEST_GRAPH), $(addprefix test-verify-, $(KERNELS))) \
+		     test-verify-cc-weak-directed

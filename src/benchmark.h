@@ -17,6 +17,10 @@
 #include "util.h"
 #include "writer.h"
 
+#ifdef GEM5_ROI
+#include <gem5/m5ops.h>
+#endif
+
 
 /*
 GAP Benchmark Suite
@@ -105,7 +109,16 @@ void BenchmarkKernel(const CLApp &cli, const GraphT_ &g,
   Timer trial_timer;
   for (int iter=0; iter < cli.num_trials(); iter++) {
     trial_timer.Start();
+#ifdef GEM5_ROI
+    // gem5 exits on these annotations so its driver can reset statistics
+    // after graph loading and dump them immediately after this kernel trial.
+    // Verification and result analysis remain outside the measured ROI.
+    m5_work_begin(static_cast<uint64_t>(iter), 0);
+#endif
     auto result = kernel(g);
+#ifdef GEM5_ROI
+    m5_work_end(static_cast<uint64_t>(iter), 0);
+#endif
     trial_timer.Stop();
     PrintTime("Trial Time", trial_timer.Seconds());
     total_seconds += trial_timer.Seconds();

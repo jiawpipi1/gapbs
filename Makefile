@@ -31,6 +31,9 @@ include test/test.mk
 # Benchmark Automation
 include benchmark/bench.mk
 
+# gem5 workload build and reduced deterministic graph generation
+include benchmark/gem5.mk
+
 
 .PHONY: clean
 clean:
