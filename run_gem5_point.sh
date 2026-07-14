@@ -77,14 +77,21 @@ case "$LAT" in
   *) echo "bad -l: $LAT (l0|l12|f1s12|f2s12)" >&2; exit 2 ;;
 esac
 
-SG="$ROOT/benchmark/GAP/benchmark/graphs/gem5/${GRAPH}-s${SCALE}-d${DEGREE}.sg"
+# sssp operates on a WEIGHTED graph (WGraph); every other kernel takes the
+# unweighted .sg. Picking the wrong one silently fails to load.
+EXT=sg
+[[ "$KERNEL" == "sssp" ]] && EXT=wsg
+
+SG="$ROOT/benchmark/GAP/benchmark/graphs/gem5/${GRAPH}-s${SCALE}-d${DEGREE}.${EXT}"
 BIN="$ROOT/benchmark/GAP/build/gem5/${KERNEL}"
 [[ -f "$SG"  ]] || { echo "no such graph: $SG" >&2; exit 1; }
 [[ -x "$BIN" ]] || { echo "no such kernel: $BIN" >&2; exit 1; }
 
-# Refuse to run a graph whose GAP-chosen source is degenerate.
-"$ROOT/benchmark/GAP/build/gem5/gem5_source_audit" -f "$SG" > /dev/null || {
-  echo "source audit FAILED for $SG -- refusing to run" >&2; exit 1; }
+# Refuse to run a graph whose GAP-chosen source is degenerate. The audit tool reads
+# the unweighted graph; for sssp check the .sg twin, which has identical topology.
+AUDIT_SG="${SG%.*}.sg"
+"$ROOT/benchmark/GAP/build/gem5/gem5_source_audit" -f "$AUDIT_SG" > /dev/null || {
+  echo "source audit FAILED for $AUDIT_SG -- refusing to run" >&2; exit 1; }
 
 [[ -n "$OUTDIR" ]] || OUTDIR="gap-${KERNEL}-${GRAPH}-s${SCALE}-${TABLE}-${LAT}${GATE:+-$GATE}${L2SIZE:+-l2$L2SIZE}"
 
