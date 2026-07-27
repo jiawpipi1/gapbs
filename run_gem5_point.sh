@@ -13,25 +13,31 @@
 #
 # Usage:
 #   run_gem5_point.sh -k KERNEL -g GRAPH -t TABLE -l LATENCY [-s SCALE] [-o DIR]
+#                        [-P REPAIR_TABLE_DIR] [-D spread|clustered] [-R]
 #
 #   -k  bfs|bc|cc|pr|sssp|tc
 #   -g  kron|urand
-#   -t  clean | 1040 | 796 | 642 | 193      (repair table / severity point)
+#   -t  clean | numeric die id               (repair table / severity point)
 #   -l  l0 | l12 | f1s12 | f2s12            (lookup-latency model)
 #   -s  graph scale (default 14)
 #   -o  output dir under gem5/m5out (default: gap-<k>-<g>-s<scale>-<t>-<l>)
+#   -P  explicit repair-table directory (for slot-count experiments)
+#   -D  Layer-D placement: spread (published/original) or clustered (opt-in)
+#   -R  ROI-only sweep: stop at workend and skip the already-covered verifier
 #
 set -euo pipefail
 
 ROOT=/home/pitsaiyang/work/my_work
-TABLE_DIR="$ROOT/Fault_yield/remap_json_hbm3_v512_20260714"
+TABLE_DIR="$ROOT/Fault_yield/remap_json_hbm3_v512_atomic32B_s32_20260720"
 SCALE=14
 DEGREE=16
 OUTDIR=""
+ROI_ONLY=0
 
 GATE=""
+DMAPPING=""
 L2SIZE=""
-while getopts "k:g:t:l:s:o:G:L:" opt; do
+while getopts "k:g:t:l:s:o:G:D:L:P:R" opt; do
   case "$opt" in
     k) KERNEL="$OPTARG" ;;
     g) GRAPH="$OPTARG" ;;
@@ -40,7 +46,10 @@ while getopts "k:g:t:l:s:o:G:L:" opt; do
     s) SCALE="$OPTARG" ;;
     o) OUTDIR="$OPTARG" ;;
     G) GATE="$OPTARG" ;;   # unified | legacy
+    D) DMAPPING="$OPTARG" ;; # spread | clustered
     L) L2SIZE="$OPTARG" ;; # LLC size, e.g. 1MB / 256kB. Sets DRAM intensity.
+    P) TABLE_DIR="$OPTARG" ;; # explicit slot-sweep table directory
+    R) ROI_ONLY=1 ;; # performance sweep only; never counts as a verified run
     *) echo "bad option" >&2; exit 2 ;;
   esac
 done
@@ -50,8 +59,17 @@ done
 # -G legacy : every dead-bank access pays the slow latency (conservative).
 GATE_ARG=()
 if [[ -n "$GATE" ]]; then GATE_ARG=(--repair-gate "$GATE"); fi
+DMAPPING_ARG=()
+if [[ -n "$DMAPPING" ]]; then
+  [[ "$DMAPPING" == "spread" || "$DMAPPING" == "clustered" ]] || {
+    echo "bad -D: $DMAPPING (spread|clustered)" >&2; exit 2;
+  }
+  DMAPPING_ARG=(--repair-d-mapping "$DMAPPING")
+fi
 L2_ARG=()
 if [[ -n "$L2SIZE" ]]; then L2_ARG=(--l2-size "$L2SIZE"); fi
+ROI_ONLY_ARG=()
+if [[ "$ROI_ONLY" -eq 1 ]]; then ROI_ONLY_ARG=(--exit-after-roi); fi
 
 # -- repair table ------------------------------------------------------------
 # `--repair-table none` is the clean-die baseline. Everything else must be a
@@ -60,6 +78,10 @@ if [[ -n "$L2SIZE" ]]; then L2_ARG=(--l2-size "$L2SIZE"); fi
 if [[ "$TABLE" == "clean" ]]; then
   TABLE_ARG=(--repair-table none)
 else
+  # Canonicalize before cd'ing into gem5 below. A caller may pass -P as a path
+  # relative to the workspace; forwarding that relative string would make gem5
+  # resolve it under gem5/ and fail after the output directory was created.
+  TABLE_DIR=$(realpath "$TABLE_DIR")
   TABLE_JSON="$TABLE_DIR/remap_hbm_${TABLE}.json"
   [[ -f "$TABLE_JSON" ]] || { echo "no such table: $TABLE_JSON" >&2; exit 1; }
   TABLE_ARG=(--repair-table "$TABLE_JSON")
@@ -93,7 +115,7 @@ AUDIT_SG="${SG%.*}.sg"
 "$ROOT/benchmark/GAP/build/gem5/gem5_source_audit" -f "$AUDIT_SG" > /dev/null || {
   echo "source audit FAILED for $AUDIT_SG -- refusing to run" >&2; exit 1; }
 
-[[ -n "$OUTDIR" ]] || OUTDIR="gap-${KERNEL}-${GRAPH}-s${SCALE}-${TABLE}-${LAT}${GATE:+-$GATE}${L2SIZE:+-l2$L2SIZE}"
+[[ -n "$OUTDIR" ]] || OUTDIR="gap-${KERNEL}-${GRAPH}-s${SCALE}-${TABLE}-${LAT}${GATE:+-$GATE}${DMAPPING:+-$DMAPPING}${L2SIZE:+-l2$L2SIZE}"
 
 cd "$ROOT/gem5"
 echo "[run] $OUTDIR"
@@ -108,16 +130,30 @@ echo "[run] $OUTDIR"
   "${TABLE_ARG[@]}" \
   "${LAT_ARG[@]}" \
   "${GATE_ARG[@]}" \
-  "${L2_ARG[@]}"
+  "${DMAPPING_ARG[@]}" \
+  "${L2_ARG[@]}" \
+  "${ROI_ONLY_ARG[@]}"
 
 # -- success criteria --------------------------------------------------------
 OUT="m5out/$OUTDIR/simout.txt"
 ERR="m5out/$OUTDIR/simerr.txt"
-grep -q "Verification:  *PASS" "$OUT" || { echo "FAIL: verification" >&2; exit 1; }
+if [[ "$ROI_ONLY" -eq 0 ]]; then
+  grep -q "Verification:  *PASS" "$OUT" || { echo "FAIL: verification" >&2; exit 1; }
+else
+  grep -q "ROI-only mode: stopping before the post-ROI verifier" "$OUT" || {
+    echo "FAIL: ROI-only stop marker missing" >&2; exit 1; }
+  if grep -q "Verification:" "$OUT"; then
+    echo "FAIL: ROI-only run unexpectedly reached the verifier" >&2; exit 1
+  fi
+fi
 grep -q "completed 1 ROI" "$OUT"      || { echo "FAIL: not exactly one ROI" >&2; exit 1; }
 grep -q "Ramulator2 statistics: ROI" "$OUT" || {
   echo "FAIL: no ROI-scoped Ramulator block" >&2; exit 1; }
 if grep -qE "^(fatal|panic):" "$ERR"; then echo "FAIL: fatal/panic" >&2; exit 1; fi
 
 ROI_TICKS=$(grep -oP 'ROI 0 end.*\(\K[0-9]+' "$OUT")
-echo "[ok ] $OUTDIR  ROI ticks = $ROI_TICKS"
+if [[ "$ROI_ONLY" -eq 1 ]]; then
+  echo "[roi] $OUTDIR  ROI ticks = $ROI_TICKS  (verification intentionally skipped)"
+else
+  echo "[ok ] $OUTDIR  ROI ticks = $ROI_TICKS"
+fi
